@@ -1,0 +1,28 @@
+[build-system]
+requires = [ "hatchling" ]
+build-backend = "hatchling.build"
+
+[project]
+name = "kmsak"
+version = "2026.02"
+dependencies = [
+  "click",
+]
+requires-python = ">=3.8"
+authors = [
+  { name = "Thierry Reding", email = "treding@nvidia.com" }
+]
+description = "Kernel Maintainer's Swiss Army Knife"
+readme = "README.md"
+license = "MIT"
+license-files = [ "LICEN[CS]E.*" ]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+]
+
+[project.scripts]
+kmsak = "kmsak.cli:main"
