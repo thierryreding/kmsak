@@ -3,6 +3,8 @@
 import difflib, multiprocessing, os, pathlib, re, subprocess, sys
 import click
 
+import kmsak
+
 CURDIR = pathlib.Path.cwd()
 HOME = pathlib.Path.home()
 
@@ -10,50 +12,50 @@ ISSUE = re.compile(r'(.*?):\s*([^:\s(]+?)(?:@([0-9a-fA-F]+))?(?:\s*\((.*?)\))?:\
 
 class ContextObject:
     def __init__(self):
-        self.arch = None
         self.output = None
-        self.vendor = None
         self.log_dir = None
-        self.paths = []
-        self.cross = {}
 
-        with open(HOME / '.cross-compile', 'r') as fobj:
-            for line in fobj:
-                if line.startswith('#'):
-                    continue
+        self.config = kmsak.Configuration()
+        self.arch = self.config.architecture
+        self.vendor = self.config.vendor
 
-                key, value = line.strip().split(':', maxsplit = 1)
-
-                if key == 'path':
-                    PATH = os.environ['PATH']
-
-                    for path in value.strip().split(':'):
-                        path = path.replace('$HOME', str(HOME))
-                        self.paths.append(path)
-                else:
-                    self.cross[key] = value.strip()
-
-    @property
-    def PATH(self):
-        return ':'.join(self.paths)
+    def PATH(self, arch):
+        return self.config.PATH(arch)
 
     @property
     def CROSS_COMPILE(self):
-        return self.cross[self.arch]
+        return self.config.CROSS_COMPILE(self.arch)
 
 @click.group()
+@click.option('--arch', '-A')
+@click.option('--output', '-O', type = click.Path(), default = CURDIR / 'build' / 'dtbs')
 @click.pass_obj
-def cli(obj):
-    pass
+def cli(obj, arch, output):
+    if arch:
+        obj.arch = arch
+
+    obj.output = output
+
+    # setup PATH environment variable for subcommands
+    PATH = f'{os.environ['PATH']}:{obj.PATH(obj.arch)}'
+    os.environ['PATH'] = PATH
 
 @cli.group()
 @click.pass_obj
 def bindings(obj):
-    click.echo('bindings...')
+    pass
+
+@bindings.command()
+@click.argument('schemas', nargs = -1, required = False)
+@click.pass_obj
+def check(obj, schemas):
+    cmd =  [ 'make', f'ARCH={obj.arch}', f'CROSS_COMPILE={obj.CROSS_COMPILE}' ]
+    cmd += [ f'O={obj.output}', f'DT_SCHEMA_FILES={':'.join(schemas)}' ]
+    cmd += [ 'dt_binding_check' ]
+
+    subprocess.run(cmd)
 
 @cli.group()
-@click.option('--arch', '-A', required = True)
-@click.option('--output', '-O', type = click.Path(), default = CURDIR / 'build' / 'dtbs')
 @click.option('--vendor', '-V')
 @click.pass_obj
 def dtbs(obj, arch, output, vendor):
@@ -68,10 +70,6 @@ def dtbs(obj, arch, output, vendor):
         obj.dirs = [ x for x in obj.top_dir.iterdir() if x.is_dir() ]
     else:
         obj.dirs = [ obj.top_dir / obj.vendor ]
-
-    # setup PATH environment variable for subcommands
-    PATH = f'{os.environ['PATH']}:{obj.PATH}'
-    os.environ['PATH'] = PATH
 
 @dtbs.command()
 @click.argument('directory', type = click.Path(path_type = pathlib.Path))
