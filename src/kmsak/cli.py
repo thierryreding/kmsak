@@ -90,10 +90,10 @@ def check(obj, all, schemas):
 @cli.group()
 @click.option('--vendor', '-V')
 @click.pass_obj
-def dtbs(obj, arch, output, vendor):
-    obj.arch = arch
-    obj.output = output
-    obj.vendor = vendor
+def dtbs(obj, vendor):
+    # override default vendor if command-line option is provided
+    if vendor:
+        obj.vendor = vendor
 
     obj.top_dir = CURDIR / 'arch' / obj.arch / 'boot' / 'dts'
     obj.log_dir = obj.output / 'logs' / obj.arch
