@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import difflib, multiprocessing, os, pathlib, re, subprocess, sys
-import click
+import click, git
 
 import kmsak
 
@@ -9,6 +9,8 @@ CURDIR = pathlib.Path.cwd()
 HOME = pathlib.Path.home()
 
 ISSUE = re.compile(r'(.*?):\s*([^:\s(]+?)(?:@([0-9a-fA-F]+))?(?:\s*\((.*?)\))?:\s*(.*)$')
+INFO = click.style('kmsak', fg = 'magenta')
+ERROR = click.style('kmsak', fg = 'red', bold = True)
 
 class ContextObject:
     def __init__(self):
@@ -46,14 +48,44 @@ def bindings(obj):
     pass
 
 @bindings.command()
+@click.option('--all', is_flag = True)
 @click.argument('schemas', nargs = -1, required = False)
 @click.pass_obj
-def check(obj, schemas):
+def check(obj, all, schemas):
+    schemas = list(schemas)
+
+    # cannot use --all with an explicit list of schemas
+    if all and schemas:
+        click.echo(f'{ERROR}: --all option conflicts with schemas: {':'.join(schemas)}')
+        return
+
+    # try to determine from the latest commit message which bindings were
+    # modified and test only those
+    if not schemas and not all:
+        repo = git.Repo()
+
+        for name, stats in repo.head.commit.stats.files.items():
+            if name.startswith('Documentation/devicetree/bindings/'):
+                schemas.append(name)
+
+        if not schemas:
+            click.echo(f'{INFO}: no schemas modified, use --all?')
+            return
+
     cmd =  [ 'make', f'ARCH={obj.arch}', f'CROSS_COMPILE={obj.CROSS_COMPILE}' ]
-    cmd += [ f'O={obj.output}', f'DT_SCHEMA_FILES={':'.join(schemas)}' ]
+    cmd += [ f'O={obj.output}' ]
+
+    if schemas:
+        cmd += [ f'DT_SCHEMA_FILES={':'.join(schemas)}' ]
+
     cmd += [ 'dt_binding_check' ]
 
-    subprocess.run(cmd)
+    click.echo(f'{INFO} $ {' '.join(cmd)}')
+    proc = subprocess.Popen(cmd, stdout = subprocess.PIPE,
+                            stderr = subprocess.STDOUT, text = True,
+                            bufsize = 1)
+    for line in proc.stdout:
+        click.echo(f'{INFO} > {line.strip()}')
 
 @cli.group()
 @click.option('--vendor', '-V')
