@@ -190,12 +190,14 @@ def todo(obj, directory):
             total = click.style(len(total), fg = 'green' if len(total) == 0 else 'red', bold = True)
             click.echo(f'{path}: {total} issues')
 
-def check_dtb(subdir, dts, obj):
+def check_dtb(subdir, dts, obj, verbose = False):
+    warnings = 2 if verbose else 1
+
     stem = os.path.join(subdir.name, dts.stem)
     dtb = stem + '.dtb'
 
     cmd  = [ 'make', f'ARCH={obj.arch}', f'CROSS_COMPILE={obj.CROSS_COMPILE}' ]
-    cmd += [ f'O={obj.output}', 'CHECK_DTBS=1', dtb ]
+    cmd += [ f'O={obj.output}', 'CHECK_DTBS=1', f'W={warnings}', dtb ]
 
     proc = subprocess.run(cmd, capture_output = True)
 
@@ -224,8 +226,9 @@ def check_dtb(subdir, dts, obj):
 
 @dtbs.command()
 @click.option('--force', '-F', is_flag = True)
+@click.option('--verbose', '-v', is_flag = True)
 @click.pass_obj
-def check(obj, force):
+def check(obj, force, verbose):
     if not (CURDIR / 'Makefile').exists() or not (CURDIR / 'Kconfig').exists():
         print(f'{CURDIR} does not look like a Linux kernel source directory')
         sys.exit(1)
@@ -245,7 +248,7 @@ def check(obj, force):
         for dts in subdir.glob('*.dts'):
             stem = os.path.join(subdir.name, dts.stem)
 
-            path, code, issues = check_dtb(subdir, dts, obj)
+            path, code, issues = check_dtb(subdir, dts, obj, verbose)
             total.extend(issues)
 
             path = click.style(path, fg = 'magenta', bold = False)
