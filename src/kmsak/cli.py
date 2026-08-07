@@ -64,9 +64,18 @@ def check(obj, all, schemas):
     if not schemas and not all:
         repo = git.Repo()
 
-        for name, stats in repo.head.commit.stats.files.items():
-            if name.startswith('Documentation/devicetree/bindings/'):
-                schemas.append(name)
+        if repo.is_dirty:
+            changes = repo.index.diff(None) + repo.index.diff()
+
+            for diff in changes:
+                name = diff.b_path
+
+                if name.startswith('Documentation/devicetree/bindings/'):
+                    schemas.append(name)
+        else:
+            for name, stats in repo.head.commit.stats.files.items():
+                if name.startswith('Documentation/devicetree/bindings/'):
+                    schemas.append(name)
 
         if not schemas:
             click.echo(f'{INFO}: no schemas modified, use --all?')
