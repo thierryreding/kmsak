@@ -199,6 +199,8 @@ def check_dtb(subdir, dts, obj, verbose = False):
     cmd  = [ 'make', f'ARCH={obj.arch}', f'CROSS_COMPILE={obj.CROSS_COMPILE}' ]
     cmd += [ f'O={obj.output}', 'CHECK_DTBS=1', f'W={warnings}', dtb ]
 
+    print('running', ' '.join(cmd))
+
     proc = subprocess.run(cmd, capture_output = True)
 
     with open(obj.log_dir / (stem + '.out'), 'wb') as log:
@@ -239,6 +241,19 @@ def check(obj, force, verbose):
             for dts in subdir.glob('*.dts'):
                 dts.touch()
 
+    # run make olddefconfig in case Kconfig changed
+    cmd  = [ 'make', f'ARCH={obj.arch}', f'CROSS_COMPILE={obj.CROSS_COMPILE}' ]
+    cmd += [ f'O={obj.output}', 'olddefconfig' ]
+
+    print('running', ' '.join(cmd))
+
+    proc = subprocess.run(cmd, capture_output = True)
+
+    if proc.returncode != 0:
+        print(proc.stderr, file = sys.stderr)
+        sys.exit(proc.return_code)
+
+    # prepare log directory
     os.makedirs(obj.log_dir, exist_ok = True)
     total = []
 
