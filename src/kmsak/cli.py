@@ -12,34 +12,71 @@ ISSUE = re.compile(r'(.*?):\s*([^:\s(]+?)(?:@([0-9a-fA-F]+))?(?:\s*\((.*?)\))?:\
 INFO = click.style('kmsak', fg = 'magenta')
 ERROR = click.style('kmsak', fg = 'red', bold = True)
 
+class Run:
+    def __init__(self, arch, output, cross_compile):
+        self.arch = arch
+        self.output = output / arch
+        self.CROSS_COMPILE = cross_compile
+
+        self.top_dir = CURDIR / 'arch' / self.arch / 'boot' / 'dts'
+        self.log_dir = self.output / 'logs' / self.arch
+        self.dirs = []
+
 class ContextObject:
     def __init__(self):
         self.output = None
         self.log_dir = None
 
         self.config = kmsak.Configuration()
-        self.arch = self.config.architecture
-        self.vendor = self.config.vendor
+        self.architectures = self.config.architectures
+        self.vendors = self.config.vendors
 
     def PATH(self, arch):
         return self.config.PATH(arch)
 
-    @property
-    def CROSS_COMPILE(self):
-        return self.config.CROSS_COMPILE(self.arch)
+    def CROSS_COMPILE(self, arch):
+        return self.config.CROSS_COMPILE(arch)
+
+    def make_runs(self):
+        runs = []
+
+        for arch in self.architectures:
+            run = Run(arch, self.output, self.CROSS_COMPILE(arch))
+
+            if self.vendors:
+                run.dirs = [ run.top_dir / vendor for vendor in self.vendors ]
+            else:
+                run.dirs = [ x for x in run.top_dir.iterdir() if x.is_dir() ]
+
+            runs.append(run)
+
+        return runs
 
 @click.group()
-@click.option('--arch', '-A')
+@click.option('--architectures', '-A', type = str)
+@click.option('--vendors', '-V', type = str)
 @click.option('--output', '-O', type = click.Path(), default = CURDIR / 'build' / 'dtbs')
 @click.pass_obj
-def cli(obj, arch, output):
-    if arch:
-        obj.arch = arch
+def cli(obj, architectures, vendors, output):
+    if architectures:
+        obj.architectures = [ x.strip() for x in architectures.split(',') ]
+
+    if vendors:
+        obj.vendors = [ x.strip() for x in vendors.split(',') ]
 
     obj.output = output
 
     # setup PATH environment variable for subcommands
-    PATH = f'{os.environ['PATH']}:{obj.PATH(obj.arch)}'
+    PATH = os.environ['PATH']
+    paths = []
+
+    for arch in obj.architectures:
+        path = obj.PATH(arch)
+
+        if path not in paths:
+            paths.append(path)
+
+    PATH = ':'.join([ PATH ] + paths)
     os.environ['PATH'] = PATH
 
 @cli.group()
@@ -97,20 +134,16 @@ def check(obj, all, schemas):
         click.echo(f'{INFO} > {line.strip()}')
 
 @cli.group()
-@click.option('--vendor', '-V')
+@click.option('--vendors', '-V', type = str)
 @click.pass_obj
-def dtbs(obj, vendor):
+def dtbs(obj, vendors):
+    if not (CURDIR / 'Makefile').exists() or not (CURDIR / 'Kconfig').exists():
+        print(f'{CURDIR} does not look like a Linux kernel source directory')
+        sys.exit(1)
+
     # override default vendor if command-line option is provided
-    if vendor:
-        obj.vendor = vendor
-
-    obj.top_dir = CURDIR / 'arch' / obj.arch / 'boot' / 'dts'
-    obj.log_dir = obj.output / 'logs' / obj.arch
-
-    if not obj.vendor:
-        obj.dirs = [ x for x in obj.top_dir.iterdir() if x.is_dir() ]
-    else:
-        obj.dirs = [ obj.top_dir / obj.vendor ]
+    if vendors:
+        obj.vendors = [ x.strip() for x in vendors.split(',') ]
 
 @dtbs.command()
 @click.argument('directory', type = click.Path(path_type = pathlib.Path))
@@ -118,26 +151,28 @@ def dtbs(obj, vendor):
 def analyze(obj, directory):
     total = []
 
-    for subdir in obj.dirs:
-        for dts in subdir.glob('*.dts'):
-            stem = os.path.join(subdir.name, dts.stem)
+    runs = obj.make_runs()
 
-            if directory is None:
-                directory = obj.log_dir
+    for run in runs:
+        for subdir in run.dirs:
+            for dts in subdir.glob('*.dts'):
+                stem = os.path.join(subdir.name, dts.stem)
 
-            with open(directory / (stem + '.err'), 'r') as log:
-                for line in log:
-                    if not line or line[0].isspace():
-                        continue
+                if directory is None:
+                    directory = obj.log_dir
 
-                    #match = re.match(r'(.*?):\s*([^:\s(]+?)(?:@([0-9a-fA-F]+))?(?:\s*\((.*?)\))?:\s*(.*)$', line)
-                    match = ISSUE.match(line)
-                    if not match:
-                        click.echo(f'ERROR: failed to parse issue: {line}')
-                        continue
+                with open(directory / run.arch / (stem + '.err'), 'r') as log:
+                    for line in log:
+                        if not line or line[0].isspace():
+                            continue
 
-                    path, node, unit, binding, message = match.groups()
-                    total.append((path, node, unit, binding, message))
+                        match = ISSUE.match(line)
+                        if not match:
+                            click.echo(f'ERROR: failed to parse issue: {line}')
+                            continue
+
+                        path, node, unit, binding, message = match.groups()
+                        total.append((path, node, unit, binding, message))
 
     print(f'Summary:')
     print(f'{len(total)} issues')
@@ -165,48 +200,52 @@ def analyze(obj, directory):
 @click.argument('directory', type = click.Path(path_type = pathlib.Path), required = False)
 @click.pass_obj
 def todo(obj, directory):
-    for subdir in obj.dirs:
-        for dts in sorted(subdir.glob('*.dts')):
-            stem = os.path.join(subdir.name, dts.stem)
-            total = []
+    runs = obj.make_runs()
 
-            if directory is None:
-                directory = obj.log_dir
+    for run in runs:
+        for subdir in run.dirs:
+            for dts in sorted(subdir.glob('*.dts')):
+                stem = os.path.join(subdir.name, dts.stem)
+                total = []
 
-            with open(directory / (stem + '.err'), 'r') as log:
-                for line in log:
-                    if not line or line[0].isspace():
-                        continue
+                if directory is None:
+                    directory = obj.log_dir
 
-                    match = ISSUE.match(line)
-                    if not match:
-                        click.echo(f'ERROR: failed to parse issue: {line}')
-                        continue
+                with open(directory / run.arch / (stem + '.err'), 'r') as log:
+                    for line in log:
+                        if not line or line[0].isspace():
+                            continue
 
-                    path, node, unit, binding, message = match.groups()
-                    total.append((path, node, unit, binding, message))
+                        match = ISSUE.match(line)
+                        if not match:
+                            click.echo(f'ERROR: failed to parse issue: {line}')
+                            continue
 
-            path = click.style(stem, fg = 'magenta')
-            total = click.style(len(total), fg = 'green' if len(total) == 0 else 'red', bold = True)
-            click.echo(f'{path}: {total} issues')
+                        path, node, unit, binding, message = match.groups()
+                        total.append((path, node, unit, binding, message))
 
-def check_dtb(subdir, dts, obj, verbose = False):
+                path = click.style(stem, fg = 'magenta')
+                color = 'green' if len(total) == 0 else 'red'
+                total = click.style(len(total), fg = color, bold = True)
+                click.echo(f'{path}: {total} issues')
+
+def check_dtb(subdir, dts, run, verbose = False):
     warnings = 2 if verbose else 1
 
     stem = os.path.join(subdir.name, dts.stem)
     dtb = stem + '.dtb'
 
-    cmd  = [ 'make', f'ARCH={obj.arch}', f'CROSS_COMPILE={obj.CROSS_COMPILE}' ]
-    cmd += [ f'O={obj.output}', 'CHECK_DTBS=1', f'W={warnings}', dtb ]
+    cmd  = [ 'make', f'ARCH={run.arch}', f'CROSS_COMPILE={run.CROSS_COMPILE}' ]
+    cmd += [ f'O={run.output}', 'CHECK_DTBS=1', f'W={warnings}', dtb ]
 
     print('running', ' '.join(cmd))
 
     proc = subprocess.run(cmd, capture_output = True)
 
-    with open(obj.log_dir / (stem + '.out'), 'wb') as log:
+    with open(run.log_dir / (stem + '.out'), 'wb') as log:
         log.write(proc.stdout)
 
-    with open(obj.log_dir / (stem + '.err'), 'wb') as log:
+    with open(run.log_dir / (stem + '.err'), 'wb') as log:
         log.write(proc.stderr)
 
     issues = []
@@ -231,49 +270,50 @@ def check_dtb(subdir, dts, obj, verbose = False):
 @click.option('--verbose', '-v', is_flag = True)
 @click.pass_obj
 def check(obj, force, verbose):
-    if not (CURDIR / 'Makefile').exists() or not (CURDIR / 'Kconfig').exists():
-        print(f'{CURDIR} does not look like a Linux kernel source directory')
-        sys.exit(1)
+    runs = obj.make_runs()
 
     # force rebuild of DTS files by updating the mtime
     if force:
-        for subdir in obj.dirs:
-            for dts in subdir.glob('*.dts'):
-                dts.touch()
+        for run in runs:
+            for subdir in run.dirs:
+                for dts in subdir.glob('*.dts'):
+                    dts.touch()
 
-    # run make olddefconfig in case Kconfig changed
-    cmd  = [ 'make', f'ARCH={obj.arch}', f'CROSS_COMPILE={obj.CROSS_COMPILE}' ]
-    cmd += [ f'O={obj.output}', 'olddefconfig' ]
-
-    print('running', ' '.join(cmd))
-
-    proc = subprocess.run(cmd, capture_output = True)
-
-    if proc.returncode != 0:
-        print(proc.stderr, file = sys.stderr)
-        sys.exit(proc.return_code)
-
-    # prepare log directory
-    os.makedirs(obj.log_dir, exist_ok = True)
     total = []
 
-    for subdir in obj.dirs:
-        os.makedirs(obj.log_dir / subdir.name, exist_ok = True)
+    for run in runs:
+        # run make olddefconfig in case Kconfig changed
+        cmd  = [ 'make', f'ARCH={run.arch}', f'CROSS_COMPILE={run.CROSS_COMPILE}' ]
+        cmd += [ f'O={run.output}', 'olddefconfig' ]
 
-        for dts in subdir.glob('*.dts'):
-            stem = os.path.join(subdir.name, dts.stem)
+        print('running', ' '.join(cmd))
 
-            path, code, issues = check_dtb(subdir, dts, obj, verbose)
-            total.extend(issues)
+        proc = subprocess.run(cmd, capture_output = True)
 
-            path = click.style(path, fg = 'magenta', bold = False)
+        if proc.returncode != 0:
+            print(proc.stderr, file = sys.stderr)
+            sys.exit(proc.return_code)
 
-            if not issues:
-                issues = click.style(len(issues), fg = 'green', bold = True)
-            else:
-                issues = click.style(len(issues), fg = 'red', bold = True)
+        # prepare log directory
+        os.makedirs(run.log_dir, exist_ok = True)
 
-            click.echo(f'{path}: {issues} issues')
+        for subdir in run.dirs:
+            os.makedirs(run.log_dir / subdir.name, exist_ok = True)
+
+            for dts in subdir.glob('*.dts'):
+                stem = os.path.join(subdir.name, dts.stem)
+
+                path, code, issues = check_dtb(subdir, dts, run, verbose)
+                total.extend(issues)
+
+                path = click.style(path, fg = 'magenta', bold = False)
+
+                if not issues:
+                    issues = click.style(len(issues), fg = 'green', bold = True)
+                else:
+                    issues = click.style(len(issues), fg = 'red', bold = True)
+
+                click.echo(f'{path}: {issues} issues')
 
     if not total:
         summary = click.style(len(total), fg = 'green', bold = True)
@@ -288,49 +328,54 @@ def check(obj, force, verbose):
 @click.pass_obj
 def snapshot(obj, output):
     os.makedirs(output, exist_ok = True)
+    runs = obj.make_runs()
 
-    for subdir in obj.dirs:
-        target = output / subdir.name
-        os.makedirs(target, exist_ok = True)
+    for run in runs:
+        for subdir in run.dirs:
+            target = output / run.arch / subdir.name
+            os.makedirs(target, exist_ok = True)
 
-        for dts in subdir.glob('*.dts'):
-            stem = os.path.join(subdir.name, dts.stem)
-            err = obj.log_dir / (stem + '.err')
-            out = obj.log_dir / (stem + '.out')
+            for dts in subdir.glob('*.dts'):
+                stem = os.path.join(subdir.name, dts.stem)
+                err = run.log_dir / (stem + '.err')
+                out = run.log_dir / (stem + '.out')
 
-            err.move_into(target)
-            out.move_into(target)
+                err.move_into(target)
+                out.move_into(target)
 
 @dtbs.command()
 @click.argument('a', type = click.Path(path_type = pathlib.Path))
 @click.argument('b', type = click.Path(path_type = pathlib.Path))
 @click.pass_obj
 def diff(obj, a, b):
-    for subdir in obj.dirs:
-        for src in (a / subdir.name).glob('*.err'):
-            dst = b / subdir.name / src.name
+    runs = obj.make_runs()
 
-            with open(src, 'r') as fobj:
-                x = fobj.readlines()
+    for run in runs:
+        for subdir in run.dirs:
+            for src in (a / run.arch / subdir.name).glob('*.err'):
+                dst = b / run.arch / subdir.name / src.name
 
-            with open(dst, 'r') as fobj:
-                y = fobj.readlines()
+                with open(src, 'r') as fobj:
+                    x = fobj.readlines()
 
-            for line in difflib.unified_diff(x, y, src.name, dst.name):
-                if line[0] == '+':
-                    if line[1] == '+':
-                        line = click.style(line, bold = True)
-                    else:
-                        line = click.style(line, fg = 'green')
-                elif line[0] == '-':
-                    if line[1] == '-':
-                        line = click.style(line, bold = True)
-                    else:
-                        line = click.style(line, fg = 'red')
-                elif line[0] == '@':
-                    line = click.style(line, fg = 'cyan', bold = True)
+                with open(dst, 'r') as fobj:
+                    y = fobj.readlines()
 
-                print(line, end = '')
+                for line in difflib.unified_diff(x, y, src.name, dst.name):
+                    if line[0] == '+':
+                        if line[1] == '+':
+                            line = click.style(line, bold = True)
+                        else:
+                            line = click.style(line, fg = 'green')
+                    elif line[0] == '-':
+                        if line[1] == '-':
+                            line = click.style(line, bold = True)
+                        else:
+                            line = click.style(line, fg = 'red')
+                    elif line[0] == '@':
+                        line = click.style(line, fg = 'cyan', bold = True)
+
+                    print(line, end = '')
 
 def main():
     cli(obj = ContextObject())

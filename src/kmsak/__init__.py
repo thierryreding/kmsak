@@ -28,8 +28,9 @@ class Configuration:
             data = tomllib.load(f)
 
         if 'defaults' in data:
-            self.architecture = data['defaults'].get('architecture', None)
-            self.vendor = data['defaults'].get('vendor', None)
+            defaults = data['defaults']
+            self.architectures = defaults.get('architectures', ['x86_64'])
+            self.vendors = defaults.get('vendors', None)
 
         if 'toolchains' in data:
             for key, value in data['toolchains'].items():
